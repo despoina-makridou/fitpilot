@@ -3,23 +3,41 @@
     "name": "FitPilot",
     "slug": "FitPilot",
     "version": "1.0.0",
+    "scheme": "fitpilot",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.fitpilot.app"
     },
     "android": {
+      "package": "com.fitpilot.app",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0B0F0E",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-web-browser",
+      "expo-asset",
+      [
+        "expo-notifications",
+        {
+          "color": "#B4FF39"
+        }
+      ],
+      "expo-audio"
+    ]
   }
 }
