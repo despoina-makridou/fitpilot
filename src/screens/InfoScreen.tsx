@@ -10,18 +10,23 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
-import { saveUserInfo } from '../lib/db';
+import { saveNickname } from '../lib/db';
+import { saveLocalProfile } from '../lib/localProfile';
 import { FITNESS_LEVELS, FitnessLevel, Sex, UserInfo } from '../types';
 import { Button, Screen } from '../components/ui';
 import { theme } from '../theme';
 
 /**
- * First real onboarding step (after consent): collect the info the app + AI
- * coach use to give realistic, personalized guidance (e.g. safe target weights).
+ * Onboarding info step. IMPORTANT privacy split:
+ *  - Personal info (name/age/sex/height/weight/level/days) is saved LOCALLY on
+ *    the device only (saveLocalProfile) for on-device AI/guardrails. It is NOT
+ *    sent to the cloud — matching the consent screen's promise.
+ *  - Only a non-identifying NICKNAME goes to the cloud (saveNickname), as the
+ *    study label so participants can be told apart in analysis.
  */
 export default function InfoScreen() {
   const { session, refreshProfile } = useAuth();
-  const [name, setName] = useState('');
+  const [nickname, setNickname] = useState('');
   const [age, setAge] = useState('');
   const [sex, setSex] = useState<Sex | null>(null);
   const [height, setHeight] = useState('');
@@ -31,11 +36,11 @@ export default function InfoScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  function validate(): UserInfo | null {
+  function validate(): { nickname: string; info: UserInfo } | null {
     const a = parseInt(age, 10);
     const h = parseFloat(height);
     const w = parseFloat(weight);
-    if (!name.trim()) return err('Please enter your name.');
+    if (!nickname.trim()) return err('Please choose a nickname.');
     if (!a || a < 13 || a > 100) return err('Enter a valid age (13–100).');
     if (!sex) return err('Please select your sex.');
     if (!h || h < 120 || h > 230) return err('Enter a valid height in cm (120–230).');
@@ -43,13 +48,16 @@ export default function InfoScreen() {
     if (!level) return err('Please select your fitness level.');
     if (!days) return err('Please select how many days per week you can train.');
     return {
-      name: name.trim(),
-      age: a,
-      sex,
-      height_cm: h,
-      weight_kg: w,
-      fitness_level: level,
-      days_per_week: days,
+      nickname: nickname.trim(),
+      info: {
+        name: nickname.trim(),
+        age: a,
+        sex,
+        height_cm: h,
+        weight_kg: w,
+        fitness_level: level,
+        days_per_week: days,
+      },
     };
   }
   function err(msg: string): null {
@@ -59,11 +67,13 @@ export default function InfoScreen() {
 
   async function next() {
     setError(null);
-    const info = validate();
-    if (!info || !session?.user) return;
+    const v = validate();
+    if (!v || !session?.user) return;
     setLoading(true);
     try {
-      await saveUserInfo(session.user.id, info);
+      // Personal info -> device only. Nickname -> cloud (study label).
+      await saveLocalProfile(v.info);
+      await saveNickname(session.user.id, v.nickname);
       await refreshProfile();
     } catch (e: any) {
       setError(e?.message ?? 'Could not save.');
@@ -80,15 +90,18 @@ export default function InfoScreen() {
       >
         <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           <Text style={s.title}>About you</Text>
-          <Text style={s.sub}>We use this to tailor realistic goals and coaching.</Text>
+          <Text style={s.sub}>
+            Your details stay on your device. Only a nickname is used for the study.
+          </Text>
 
-          <Field label="Name">
+          <Field label="Nickname">
             <TextInput
               style={s.input}
-              placeholder="Your name"
+              placeholder="e.g. RunnerA"
               placeholderTextColor={theme.colors.textFaint}
-              value={name}
-              onChangeText={setName}
+              autoCapitalize="none"
+              value={nickname}
+              onChangeText={setNickname}
             />
           </Field>
 

@@ -17,7 +17,8 @@ export const SUPABASE_ANON_KEY =
  * Supabase for Google sign-in. Also configure this URL in Supabase Auth
  * providers. Leave empty to hide the Google button until configured.
  */
-export const GOOGLE_WEB_CLIENT_ID = '';
+export const GOOGLE_WEB_CLIENT_ID =
+  '692939480060-3kv0uumc3etthal03jrmg50n6a59scbu.apps.googleusercontent.com';
 
 /** The on-device model filename (bundled + reassembled on first launch). */
 export const MODEL_FILENAME = 'qwen2.5-0.5b-instruct-q4_k_m.gguf';

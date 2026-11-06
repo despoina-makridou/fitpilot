@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '../context/AuthContext';
-import { logAdherence } from '../lib/db';
+import { enqueueLog } from '../lib/syncQueue';
+import { recentLogs } from '../lib/db';
+import { pointsForNewSession } from '../lib/points';
 import { makeEncouragement, CoachContext } from '../ai/brain';
 import { templateForGoal, todayIndex, dayName } from '../lib/templates';
 import {
@@ -13,7 +15,8 @@ import {
   equipmentLabel,
 } from '../lib/exercises';
 import { playTimerDone } from '../lib/sound';
-import { Outcome, TemplateItem } from '../types';
+import { getLocalProfile } from '../lib/localProfile';
+import { AdherenceLog, Outcome, TemplateItem } from '../types';
 import { Button, Card, Screen } from '../components/ui';
 import { theme } from '../theme';
 
@@ -28,7 +31,7 @@ import { theme } from '../theme';
  * For the AI arm, after logging we show a short on-device-generated
  * encouragement line. The non-AI arm just gets a neutral confirmation.
  */
-export default function ExerciseScreen() {
+export default function ExerciseScreen({ navigation }: any) {
   const { session, profile } = useAuth();
   const goal = profile?.goal ?? 'maintain';
   const template = templateForGoal(goal);
@@ -51,8 +54,13 @@ export default function ExerciseScreen() {
   const [selectedExercise, setSelectedExercise] = useState<string | null>(null);
   const [result, setResult] = useState<{ outcome: Outcome; text: string } | null>(null);
   const [reached, setReached] = useState(false);
+  const [localName, setLocalName] = useState<string | undefined>();
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const firedRef = useRef(false);
+
+  useEffect(() => {
+    getLocalProfile().then((lp) => setLocalName(lp.name));
+  }, []);
 
   // Timer target: the picked exercise's suggested time, else the session target.
   const targetMinutes = selectedExercise ? suggestedMinutes(selectedExercise) : item.targetMinutes;
@@ -93,7 +101,7 @@ export default function ExerciseScreen() {
   const isAI = profile?.group === 'ai';
   const coachCtx: CoachContext = {
     goal,
-    name: profile?.name,
+    name: localName, // device-only name, never the cloud
     availableExercises: flatExercises(goal, owned),
   };
 
@@ -113,13 +121,43 @@ export default function ExerciseScreen() {
       targetMinutes,
     };
     try {
-      await logAdherence({
-        userId: session.user.id,
+      // Compute this session's points now (streak depends on prior sessions in
+      // the current 7-day window). Fetch recent logs to know the position.
+      const nowISO = new Date().toISOString();
+      const startISO = profile.created_at ?? nowISO;
+      let priorLogs: AdherenceLog[] = [];
+      try {
+        priorLogs = await recentLogs(session.user.id, 100);
+      } catch {
+        // offline — streak will be based on no priors (worst case +0)
+      }
+      const pts = pointsForNewSession({
+        minutes: mins,
+        target: loggedItem.targetMinutes,
+        whenISO: nowISO,
+        startISO,
+        priorLogs,
+      });
+
+      // Route through the offline-safe queue: it saves locally, sends to the
+      // DB, and confirms delivery (retrying later if offline). Idempotent via
+      // the (user, session_date, item_title) unique key.
+      const todayStr = nowISO.slice(0, 10);
+      await enqueueLog({
+        user_id: session.user.id,
+        session_date: todayStr,
+        item_title: loggedItem.title,
         group: profile.group,
         goal: profile.goal,
-        item: loggedItem,
+        day: loggedItem.day,
         outcome,
         minutes: mins,
+        target_minutes: loggedItem.targetMinutes,
+        source: 'manual',
+        logged_at: nowISO,
+        points: pts.points,
+        base_points: pts.base_points,
+        streak_bonus: pts.streak_bonus,
       });
 
       let text: string;
@@ -133,8 +171,14 @@ export default function ExerciseScreen() {
             ? 'Logged. Partial session recorded.'
             : 'Logged. Session marked as skipped.';
       }
-      setResult({ outcome, text });
+      // Reset this screen and go back to Home; pass the result so Home can show
+      // a short confirmation / coach message.
+      setResult(null);
       setSeconds(0);
+      setSelectedExercise(null);
+      setReached(false);
+      firedRef.current = false;
+      navigation.navigate('Home', { justLogged: { outcome, text } });
     } catch (e: any) {
       setResult({ outcome, text: `Could not save: ${e?.message ?? 'error'}` });
     } finally {

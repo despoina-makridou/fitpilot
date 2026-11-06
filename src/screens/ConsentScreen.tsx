@@ -39,7 +39,8 @@ export default function ConsentScreen() {
           <Bullet>Whether you completed, partly did, or skipped each session.</Bullet>
 
           <Text style={[s.h, { marginTop: theme.space(5) }]}>What we DON'T collect</Text>
-          <Bullet>No health metrics, weight, location, or contacts.</Bullet>
+          <Bullet>No health metrics, weight, age, location, or contacts.</Bullet>
+          <Bullet>Your personal details stay on your device — only a nickname identifies you in the study.</Bullet>
 
           <Text style={[s.h, { marginTop: theme.space(5) }]}>How it's used</Text>
           <Bullet>

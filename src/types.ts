@@ -61,22 +61,20 @@ export interface GoalDetails {
   endurance_activity?: 'run' | 'cycle' | 'swim' | 'mixed';
 }
 
-/** A user's profile row in Supabase. */
+/**
+ * A user's profile row in Supabase (CLOUD). Study data ONLY — deliberately no
+ * personal/health fields (age/height/weight/etc.), which stay on-device in
+ * LocalProfile. See src/lib/localProfile.ts. `nickname` is a user-chosen,
+ * non-identifying label so you can tell participants apart in analysis.
+ */
 export interface Profile {
   id: string; // = auth user id
   group: StudyGroup;
   goal: Goal | null;
-  // Personal info (collected at onboarding, usable by the AI coach).
-  name: string | null;
-  age: number | null;
-  sex: Sex | null;
-  height_cm: number | null;
-  weight_kg: number | null;
-  fitness_level: FitnessLevel | null;
-  days_per_week: number | null;
+  nickname: string | null;
   /** Equipment/space the user has (ids from lib/exercises Equipment). */
   equipment: string[] | null;
-  // Goal follow-up answers, stored as JSON.
+  // Goal follow-up answers (non-personal), stored as JSON.
   goal_details: GoalDetails | null;
   consented_at: string | null;
   onboarded_at: string | null;

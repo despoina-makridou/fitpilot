@@ -13,7 +13,10 @@ import EquipmentScreen from './screens/EquipmentScreen';
 import GoalScreen from './screens/GoalScreen';
 import HomeScreen from './screens/HomeScreen';
 import ExerciseScreen from './screens/ExerciseScreen';
+import HistoryScreen from './screens/HistoryScreen';
 import ProfileScreen from './screens/ProfileScreen';
+import { ModelPrep } from './components/ModelPrep';
+import { isModelBundled } from './ai/model';
 import { theme } from './theme';
 
 const navTheme = {
@@ -58,12 +61,33 @@ function MainTabs() {
         options={{ tabBarIcon: ({ focused }) => <TabIcon label="⏱️" focused={focused} /> }}
       />
       <Tab.Screen
+        name="History"
+        component={HistoryScreen}
+        options={{ tabBarIcon: ({ focused }) => <TabIcon label="📜" focused={focused} /> }}
+      />
+      <Tab.Screen
         name="Profile"
         component={ProfileScreen}
         options={{ tabBarIcon: ({ focused }) => <TabIcon label="👤" focused={focused} /> }}
       />
     </Tab.Navigator>
   );
+}
+
+/**
+ * For the AI arm, prepare the on-device model (reassemble + load) behind a
+ * one-time progress screen before showing the app. The non-AI arm skips it.
+ */
+function MainGate() {
+  const { profile } = useAuth();
+  if (profile?.group === 'ai' && isModelBundled()) {
+    return (
+      <ModelPrep>
+        <MainTabs />
+      </ModelPrep>
+    );
+  }
+  return <MainTabs />;
 }
 
 function Loading() {
@@ -84,11 +108,11 @@ export default function RootNavigator() {
   const signedIn = !!session?.user;
   const hasEquipment = !!(profile?.equipment && profile.equipment.length > 0);
   const needsConsent = signedIn && profile && !profile.consented_at;
-  const needsInfo = signedIn && profile && profile.consented_at && !profile.name;
+  const needsInfo = signedIn && profile && profile.consented_at && !profile.nickname;
   const needsEquipment =
-    signedIn && profile && profile.consented_at && profile.name && !hasEquipment;
+    signedIn && profile && profile.consented_at && profile.nickname && !hasEquipment;
   const needsGoal =
-    signedIn && profile && profile.consented_at && profile.name && hasEquipment && !profile.onboarded_at;
+    signedIn && profile && profile.consented_at && profile.nickname && hasEquipment && !profile.onboarded_at;
 
   return (
     <NavigationContainer theme={navTheme}>
@@ -104,7 +128,7 @@ export default function RootNavigator() {
         ) : needsGoal ? (
           <Stack.Screen name="Goal" component={GoalScreen} />
         ) : (
-          <Stack.Screen name="Main" component={MainTabs} />
+          <Stack.Screen name="Main" component={MainGate} />
         )}
       </Stack.Navigator>
     </NavigationContainer>

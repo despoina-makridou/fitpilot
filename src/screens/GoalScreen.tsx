@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -12,6 +12,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { saveGoalAndFinishOnboarding } from '../lib/db';
 import { checkTargetWeight, weeklyPaceHint } from '../lib/guardrails';
+import { getLocalProfile, LocalProfile } from '../lib/localProfile';
 import { GOALS, Goal, GoalDetails } from '../types';
 import { Button, Screen } from '../components/ui';
 import { theme } from '../theme';
@@ -38,9 +39,16 @@ export default function GoalScreen() {
   const [warn, setWarn] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Weight/height for the target-weight guardrail come from the LOCAL
+  // (device-only) profile — they are never stored in the cloud.
+  const [local, setLocal] = useState<LocalProfile>({});
+  useEffect(() => {
+    getLocalProfile().then(setLocal);
+  }, []);
+
   const goalDef = GOALS.find((g) => g.id === goal);
-  const currentKg = profile?.weight_kg ?? 0;
-  const heightCm = profile?.height_cm ?? 0;
+  const currentKg = local.weight_kg ?? 0;
+  const heightCm = local.height_cm ?? 0;
 
   function pick(g: Goal) {
     setGoal(g);

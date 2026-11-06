@@ -58,6 +58,43 @@ export function plainReminder(item: TemplateItem): string {
   return `Time for your ${item.title.toLowerCase()} session. Aim for about ${item.targetMinutes} minutes.`;
 }
 
+const TIP_SYSTEM =
+  'You are a warm, encouraging fitness coach. Write ONE short daily motivational ' +
+  'tip or line (max 20 words) tailored to the user\'s goal. No hashtags, no ' +
+  'quotes, no lists. Vary it — be specific and human.';
+
+/**
+ * A fresh daily motivational tip for the AI arm's Home screen. `seed` (e.g. the
+ * date) nudges variety across days. Falls back to a rotating static line.
+ */
+export async function makeDailyTip(ctx: CoachContext, seed: string): Promise<string> {
+  const fallback = fallbackTip(ctx.goal, seed);
+  try {
+    const who = ctx.name ? `The user's name is ${ctx.name}. ` : '';
+    const user =
+      `${who}Their goal is to ${goalLabel(ctx.goal)}. Today is ${seed}. ` +
+      `Write today's motivational tip.`;
+    const text = await generate(TIP_SYSTEM, user, 48);
+    return sanitize(text) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function fallbackTip(goal: Goal | null, seed: string): string {
+  const tips = [
+    'Small, steady sessions beat rare heroic ones. Just start today.',
+    "Consistency is the real secret — show up, even for ten minutes.",
+    'Your future self is built from what you do this week.',
+    'Progress, not perfection. One session at a time.',
+    "Done is better than perfect. Move a little today.",
+  ];
+  // Deterministic pick from the seed so it's stable within a day.
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return tips[h % tips.length];
+}
+
 /** A friendly, well-formed reminder used as the AI fallback. */
 function cleanReminder(item: TemplateItem, available?: string[]): string {
   const pick = available && available.length ? available[Math.floor(Math.random() * available.length)] : null;

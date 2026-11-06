@@ -7,7 +7,6 @@ import {
   Profile,
   StudyGroup,
   TemplateItem,
-  UserInfo,
 } from '../types';
 
 /**
@@ -25,19 +24,17 @@ export async function getProfile(userId: string): Promise<Profile | null> {
 
 /**
  * Ensure a profile row exists for this user, assigning a study group in a
- * balanced way. Group assignment is done server-side via the assign_group()
- * RPC so two simultaneous signups can't both read stale counts and unbalance
- * the arms (see supabase/schema.sql). Returns the (possibly newly created)
+ * balanced way server-side (assign_group_and_create_profile RPC): counts the
+ * two arms and puts the new user in the smaller one, atomically, so concurrent
+ * signups can't unbalance the study. Returns the (possibly newly created)
  * profile.
  */
 export async function ensureProfile(userId: string): Promise<Profile> {
   const existing = await getProfile(userId);
   if (existing) return existing;
 
-  // Atomic, race-safe: counts arms and inserts into the smaller one.
   const { data, error } = await supabase.rpc('assign_group_and_create_profile');
   if (error) throw error;
-  // The RPC returns the created profile row.
   return data as Profile;
 }
 
@@ -49,19 +46,15 @@ export async function saveConsent(userId: string): Promise<void> {
   if (error) throw error;
 }
 
-/** Save the personal-info step (name/age/sex/height/weight/level/days). */
-export async function saveUserInfo(userId: string, info: UserInfo): Promise<void> {
+/**
+ * Save the user's chosen nickname to the CLOUD. Personal info (age/height/
+ * weight/etc.) is NOT sent here — it's stored locally on the device only
+ * (see saveLocalProfile). The nickname is a non-identifying study label.
+ */
+export async function saveNickname(userId: string, nickname: string): Promise<void> {
   const { error } = await supabase
     .from('profiles')
-    .update({
-      name: info.name,
-      age: info.age,
-      sex: info.sex,
-      height_cm: info.height_cm,
-      weight_kg: info.weight_kg,
-      fitness_level: info.fitness_level,
-      days_per_week: info.days_per_week,
-    })
+    .update({ nickname })
     .eq('id', userId);
   if (error) throw error;
 }
@@ -116,6 +109,28 @@ export async function logAdherence(params: {
   };
   const { error } = await supabase.from('adherence_logs').insert(row);
   if (error) throw error;
+}
+
+/**
+ * Fetch the set of session keys ('YYYY-MM-DD|item_title') the user already has
+ * logged in the cloud, over the last `days` days. Used by the backfill so we
+ * never overwrite a real log with an auto-miss.
+ */
+export async function fetchLoggedKeys(userId: string, days = 21): Promise<Set<string>> {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const { data, error } = await supabase
+    .from('adherence_logs')
+    .select('session_date,item_title,logged_at')
+    .eq('user_id', userId)
+    .gte('logged_at', since.toISOString());
+  if (error) throw error;
+  const set = new Set<string>();
+  for (const r of (data as any[]) ?? []) {
+    const date = r.session_date ?? (r.logged_at ? String(r.logged_at).slice(0, 10) : null);
+    if (date) set.add(`${date}|${r.item_title}`);
+  }
+  return set;
 }
 
 /** Recent adherence logs for the current user (for the home summary). */

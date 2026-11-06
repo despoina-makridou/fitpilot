@@ -1,18 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import { templateForGoal, todayIndex, dayName } from '../lib/templates';
-import { makeNudge, CoachContext } from '../ai/brain';
+import { makeNudge, makeDailyTip, CoachContext } from '../ai/brain';
 import { initLLM } from '../ai/llm';
 import { isModelBundled } from '../ai/model';
 import { flatExercises, Equipment } from '../lib/exercises';
-import { recentLogs } from '../lib/db';
+import { getLocalProfile, LocalProfile } from '../lib/localProfile';
+import { recentLogs, fetchLoggedKeys } from '../lib/db';
+import { backfillMissedSessions } from '../lib/backfill';
+import { flushQueue } from '../lib/syncQueue';
+import { pointsThisWindow, totalPoints, windowMaxPoints } from '../lib/points';
+import { PointsInfoModal } from '../components/PointsInfo';
 import { scheduleWeeklyReminders } from '../lib/notifications';
 import { AdherenceLog, TemplateItem } from '../types';
 import { Card, Screen, Button } from '../components/ui';
 import { theme } from '../theme';
 
-export default function HomeScreen({ navigation }: any) {
+export default function HomeScreen({ navigation, route }: any) {
   const { session, profile } = useAuth();
   const goal = profile?.goal ?? 'maintain';
   const template = templateForGoal(goal);
@@ -23,48 +29,102 @@ export default function HomeScreen({ navigation }: any) {
   // Exercises the user can actually do — fed to the AI so it never suggests
   // something they can't do.
   const owned = (profile?.equipment ?? []) as Equipment[];
+
+  const [local, setLocal] = useState<LocalProfile>({});
+  const [nudge, setNudge] = useState<string | null>(null);
+  const [dailyTip, setDailyTip] = useState<string | null>(null);
+  const [logs, setLogs] = useState<AdherenceLog[]>([]);
+  const [justLogged, setJustLogged] = useState<{ outcome: string; text: string } | null>(null);
+
+  // The coach name comes from the LOCAL (device-only) profile, never the cloud.
   const coachCtx: CoachContext = {
     goal,
-    name: profile?.name,
+    name: local.name,
     availableExercises: flatExercises(goal, owned),
   };
 
-  const [nudge, setNudge] = useState<string | null>(null);
-  const [logs, setLogs] = useState<AdherenceLog[]>([]);
+  // Reload fresh data every time Home gains focus (no stale cache). Also picks
+  // up the `justLogged` confirmation passed from the Exercise screen.
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
 
-  useEffect(() => {
-    let alive = true;
-    // AI arm: warm up the on-device model in the background so nudges and
-    // post-workout encouragement are ready without a visible stall.
-    if (isAI && isModelBundled()) {
-      initLLM().catch(() => {});
-    }
-    // AI arm: generate a nudge for today's session on-device.
-    if (isAI && todayItem) {
-      makeNudge(todayItem, coachCtx).then((t) => alive && setNudge(t));
-    }
-    if (session?.user) {
-      recentLogs(session.user.id, 30).then((l) => alive && setLogs(l)).catch(() => {});
-    }
-    // Schedule this week's reminders (idempotent — clears + re-adds).
-    if (profile) {
-      scheduleWeeklyReminders(template, profile.group, coachCtx).catch(() => {});
-    }
-    return () => {
-      alive = false;
-    };
-  }, [isAI, todayItem?.title, session?.user?.id, profile?.group]);
+      // Show the confirmation passed from the Exercise screen, then clear it.
+      if (route?.params?.justLogged) {
+        setJustLogged(route.params.justLogged);
+        navigation.setParams({ justLogged: undefined });
+      }
+
+      getLocalProfile().then((lp) => alive && setLocal(lp));
+
+      // Offline-safe study sync: flush any queued records, then backfill any
+      // past scheduled sessions the user never logged (as auto-misses), so the
+      // cloud has a correct scheduled-vs-done denominator for adherence.
+      if (session?.user && profile) {
+        (async () => {
+          try {
+            await flushQueue();
+            const loggedKeys = await fetchLoggedKeys(session.user.id);
+            await backfillMissedSessions({
+              userId: session.user.id,
+              group: profile.group,
+              goal,
+              template,
+              loggedKeys,
+              startedISO: profile.created_at ?? new Date().toISOString(),
+            });
+          } catch {
+            // offline / transient — will retry next open
+          }
+        })();
+      }
+
+      if (isAI && isModelBundled()) initLLM().catch(() => {});
+      if (isAI && todayItem) {
+        makeNudge(todayItem, coachCtx).then((t) => alive && setNudge(t));
+      }
+      if (isAI) {
+        const todaySeed = new Date().toISOString().slice(0, 10);
+        makeDailyTip(coachCtx, todaySeed).then((t) => alive && setDailyTip(t));
+      }
+      if (session?.user) {
+        recentLogs(session.user.id, 30).then((l) => alive && setLogs(l)).catch(() => {});
+      }
+      if (profile) {
+        scheduleWeeklyReminders(template, profile.group, coachCtx).catch(() => {});
+      }
+
+      return () => {
+        alive = false;
+      };
+    }, [isAI, todayItem?.title, session?.user?.id, profile?.group, route?.params?.justLogged]),
+  );
 
   // "X / Y this week": completed sessions vs total scheduled in the template.
   const totalThisWeek = template.items.length;
   const completedThisWeek = logs.filter((l) => l.outcome === 'completed' && isThisWeek(l.logged_at)).length;
   const progress = totalThisWeek ? Math.min(1, completedThisWeek / totalThisWeek) : 0;
 
+  // Points. `created_at` is when the user started (defines the 7-day windows).
+  const startISO = profile?.created_at ?? new Date().toISOString();
+  const windowPts = pointsThisWindow(logs, startISO);
+  const allTimePts = totalPoints(logs, startISO);
+  const windowMax = windowMaxPoints(template.items.length);
+  const ptsProgress = windowMax ? Math.min(1, windowPts / windowMax) : 0;
+  const [infoOpen, setInfoOpen] = useState(false);
+
   return (
     <Screen>
       <ScrollView showsVerticalScrollIndicator={false}>
-        <Text style={s.hi}>Hey{profile?.name ? ` ${profile.name}` : ''} 👋</Text>
+        <Text style={s.hi}>Hey{local.name ? ` ${local.name}` : ''} 👋</Text>
         <Text style={s.plan}>{template.name} · {dayName(today)}</Text>
+
+        {justLogged && (
+          <View style={s.loggedBanner}>
+            {isAI && <Text style={s.loggedTag}>AI COACH</Text>}
+            <Text style={s.loggedText}>{justLogged.text}</Text>
+          </View>
+        )}
 
         {todayItem ? (
           <Card style={s.todayCard}>
@@ -92,7 +152,7 @@ export default function HomeScreen({ navigation }: any) {
         )}
 
         {/* AI coach card — visually distinct, clean copy. */}
-        {isAI && todayItem && (
+        {isAI && (
           <View style={s.coachCard}>
             <View style={s.coachHead}>
               <View style={s.coachAvatar}>
@@ -100,9 +160,32 @@ export default function HomeScreen({ navigation }: any) {
               </View>
               <Text style={s.coachName}>Your coach</Text>
             </View>
-            <Text style={s.coachMsg}>{nudge ?? 'Preparing your message…'}</Text>
+            {todayItem && (
+              <Text style={s.coachMsg}>{nudge ?? 'Preparing your message…'}</Text>
+            )}
+            {dailyTip && <Text style={s.coachTip}>💡 {dailyTip}</Text>}
           </View>
         )}
+
+        {/* Points card — AI arm gets a motivational framing. */}
+        <View style={s.sectionRow}>
+          <Text style={s.section}>{isAI ? '⭐ Your points' : 'Points'}</Text>
+          <Text style={s.infoBtn} onPress={() => setInfoOpen(true)}>ⓘ How it works</Text>
+        </View>
+        <Card style={isAI ? s.pointsCardAI : undefined}>
+          <View style={s.progressRow}>
+            <Text style={s.progressNum}>
+              {windowPts}<Text style={s.progressDen}> / {windowMax}</Text>
+            </Text>
+            <Text style={s.progressLabel}>
+              {isAI ? 'points this\nweek — reach max!' : 'points this\nweek'}
+            </Text>
+          </View>
+          <View style={s.progressTrack}>
+            <View style={[s.progressFill, { width: `${ptsProgress * 100}%` }]} />
+          </View>
+          <Text style={s.allTime}>{allTimePts} points all-time</Text>
+        </Card>
 
         <Text style={s.section}>This week</Text>
         <Card>
@@ -133,6 +216,7 @@ export default function HomeScreen({ navigation }: any) {
         ))}
         <View style={{ height: theme.space(8) }} />
       </ScrollView>
+      <PointsInfoModal visible={infoOpen} onClose={() => setInfoOpen(false)} />
     </Screen>
   );
 }
@@ -151,11 +235,25 @@ function isThisWeek(iso: string): boolean {
 const s = StyleSheet.create({
   hi: { color: theme.colors.text, fontSize: theme.font.h1, fontWeight: '800', marginTop: theme.space(4) },
   plan: { color: theme.colors.textDim, fontSize: theme.font.body, marginTop: 2 },
+  loggedBanner: {
+    marginTop: theme.space(4),
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.md,
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.success,
+    padding: theme.space(4),
+  },
+  loggedTag: { color: theme.colors.accent, fontSize: theme.font.tiny, fontWeight: '800', letterSpacing: 1, marginBottom: 4 },
+  loggedText: { color: theme.colors.text, fontSize: theme.font.body, lineHeight: 21 },
   todayCard: { marginTop: theme.space(5) },
   todayKicker: { color: theme.colors.accent, fontSize: theme.font.tiny, fontWeight: '800', letterSpacing: 1.5, marginBottom: 8 },
   todayTitle: { color: theme.colors.text, fontSize: theme.font.h2, fontWeight: '800' },
   todayTarget: { color: theme.colors.textDim, fontSize: theme.font.body, marginTop: 4 },
   section: { color: theme.colors.text, fontSize: theme.font.h3, fontWeight: '700', marginTop: theme.space(7), marginBottom: theme.space(3) },
+  sectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: theme.space(7), marginBottom: theme.space(3) },
+  infoBtn: { color: theme.colors.accent, fontSize: theme.font.small, fontWeight: '600' },
+  pointsCardAI: { borderColor: theme.colors.accent },
+  allTime: { color: theme.colors.textDim, fontSize: theme.font.small, marginTop: theme.space(3) },
 
   // AI coach card
   coachCard: {
@@ -174,6 +272,7 @@ const s = StyleSheet.create({
   coachAvatarText: { color: theme.colors.onAccent, fontWeight: '900', fontSize: theme.font.tiny },
   coachName: { color: theme.colors.text, fontWeight: '700', fontSize: theme.font.small },
   coachMsg: { color: theme.colors.text, fontSize: theme.font.body, lineHeight: 22 },
+  coachTip: { color: theme.colors.textDim, fontSize: theme.font.small, lineHeight: 20, marginTop: theme.space(2), fontStyle: 'italic' },
 
   // This-week progress
   progressRow: { flexDirection: 'row', alignItems: 'center', marginBottom: theme.space(3) },

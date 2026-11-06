@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { ensureProfile, getProfile } from '../lib/db';
@@ -28,8 +28,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
 
+  // True only while an explicit, user-initiated sign-out is in progress, so we
+  // can tell a real logout apart from a transient refresh failure.
+  const userSignedOutRef = useRef(false);
+
   const loadProfile = useCallback(async (userId: string) => {
-    // Ensure a profile (assigns study group on first login), then hold it.
+    // Ensure a profile (auto-assigns a balanced study group on first login).
     const p = await ensureProfile(userId);
     setProfile(p);
   }, []);
@@ -54,7 +58,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, s) => {
+      // Keep the user logged in unless THEY sign out. A transient
+      // TOKEN_REFRESH_FAILED (offline, DB paused, flaky network) must NOT drop
+      // the session — otherwise the app force-logs-out on a network blip.
+      // We only clear on an explicit user-initiated sign-out.
+      if (event === 'SIGNED_OUT') {
+        // A SIGNED_OUT fires both on a real sign-out AND when a background
+        // token refresh fails (offline / DB paused). Only actually clear the
+        // session if the USER initiated it; otherwise keep them logged in.
+        if (userSignedOutRef.current) {
+          setSession(null);
+          setProfile(null);
+        }
+        return;
+      }
+
       setSession(s);
       if (s?.user) {
         try {
@@ -62,8 +81,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (e) {
           console.warn('profile load failed', e);
         }
-      } else {
-        setProfile(null);
       }
     });
 
@@ -74,8 +91,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadProfile]);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    setProfile(null);
+    userSignedOutRef.current = true;
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      setSession(null);
+      setProfile(null);
+      // Reset the flag shortly after so future transient events are ignored.
+      setTimeout(() => {
+        userSignedOutRef.current = false;
+      }, 1000);
+    }
   }, []);
 
   return (
