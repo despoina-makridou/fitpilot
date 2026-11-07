@@ -51,9 +51,10 @@ node_modules/react-native-screens/android/build/
 assets/model/chunk-*.bin
 models/*.gguf
 
-# Analysis: keep the service_role key out of git
-analysis/config.py
+# Analysis: private repo — config.py (with keys) IS committed on purpose.
+# Ignore only generated PDFs, the redundant example, and caches.
 analysis/*.pdf
+analysis/config.example.py
 __pycache__/
 assets/model/manifest.json
 assets/model/chunks.ts

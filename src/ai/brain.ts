@@ -17,6 +17,8 @@ export interface CoachContext {
   name?: string | null;
   /** Exercise names the user can do (goal × their equipment). May be empty. */
   availableExercises?: string[];
+  /** Optional tone steer for escalating notification rungs. */
+  toneHint?: string;
 }
 
 const NUDGE_SYSTEM =
@@ -43,9 +45,10 @@ export async function makeNudge(item: TemplateItem, ctx: CoachContext): Promise<
   const fallback = cleanReminder(item, ctx.availableExercises);
   try {
     const who = ctx.name ? `The user's name is ${ctx.name}. ` : '';
+    const tone = ctx.toneHint ? ` ${ctx.toneHint}` : '';
     const user =
       `${who}Today's session is "${item.title}" (${item.target}). ` +
-      `Their goal: ${goalLabel(ctx.goal)}.${exerciseHint(ctx)} Write the reminder.`;
+      `Their goal: ${goalLabel(ctx.goal)}.${exerciseHint(ctx)}${tone} Write the reminder.`;
     const text = await generate(NUDGE_SYSTEM, user, 48);
     return sanitize(text) || fallback;
   } catch {

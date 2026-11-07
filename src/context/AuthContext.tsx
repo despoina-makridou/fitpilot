@@ -4,6 +4,14 @@ import { supabase } from '../lib/supabase';
 import { ensureProfile, getProfile } from '../lib/db';
 import { Profile } from '../types';
 
+/** Reject after `ms` if the promise hasn't settled — prevents infinite hangs. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+  ]);
+}
+
 interface AuthState {
   loading: boolean;
   session: Session | null;
@@ -34,8 +42,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadProfile = useCallback(async (userId: string) => {
     // Ensure a profile (auto-assigns a balanced study group on first login).
-    const p = await ensureProfile(userId);
-    setProfile(p);
+    // Each attempt is wrapped in a hard timeout so a hung Supabase RPC can
+    // NEVER leave the app stuck on a loading screen. Retries a few times.
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const p = await withTimeout(ensureProfile(userId), 12000);
+        setProfile(p);
+        return;
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    console.warn('ensureProfile failed after retries', lastErr);
+    throw lastErr;
   }, []);
 
   const refreshProfile = useCallback(async () => {
@@ -45,50 +66,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [session]);
 
   useEffect(() => {
-    let mounted = true;
+    // Seed the initial session, then let the auth listener drive everything.
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
 
-    supabase.auth.getSession().then(async ({ data }) => {
-      if (!mounted) return;
-      setSession(data.session);
-      try {
-        if (data.session?.user) await loadProfile(data.session.user.id);
-      } catch (e) {
-        console.warn('profile load failed', e);
-      }
-      setLoading(false);
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event, s) => {
-      // Keep the user logged in unless THEY sign out. A transient
-      // TOKEN_REFRESH_FAILED (offline, DB paused, flaky network) must NOT drop
-      // the session — otherwise the app force-logs-out on a network blip.
-      // We only clear on an explicit user-initiated sign-out.
+    // IMPORTANT: the callback MUST be synchronous and must NOT await any
+    // Supabase call — doing so deadlocks the auth client (the callback holds
+    // the auth lock while the awaited query waits for it). This was the cause
+    // of the ~40s hang. We only set state here; profile loading happens in a
+    // SEPARATE effect that reacts to the session change.
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       if (event === 'SIGNED_OUT') {
-        // A SIGNED_OUT fires both on a real sign-out AND when a background
-        // token refresh fails (offline / DB paused). Only actually clear the
-        // session if the USER initiated it; otherwise keep them logged in.
         if (userSignedOutRef.current) {
           setSession(null);
           setProfile(null);
         }
         return;
       }
-
       setSession(s);
-      if (s?.user) {
-        try {
-          await loadProfile(s.user.id);
-        } catch (e) {
-          console.warn('profile load failed', e);
-        }
-      }
     });
 
     return () => {
-      mounted = false;
       sub.subscription.unsubscribe();
     };
-  }, [loadProfile]);
+  }, []);
+
+  // Load the profile whenever the signed-in user changes. Runs OUTSIDE the
+  // auth callback (so no auth-lock deadlock). Always clears `loading` when done.
+  const userId = session?.user?.id;
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!userId) {
+        setLoading(false);
+        return;
+      }
+      try {
+        await loadProfile(userId);
+      } catch (e) {
+        console.warn('[auth] profile load failed', e);
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [userId, loadProfile]);
 
   const signOut = useCallback(async () => {
     userSignedOutRef.current = true;

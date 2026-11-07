@@ -78,7 +78,22 @@ export interface Profile {
   goal_details: GoalDetails | null;
   consented_at: string | null;
   onboarded_at: string | null;
+  questionnaire_done_at: string | null;
   created_at: string;
+}
+
+/** Length of each user's study period, in days, from signup. */
+export const TRIAL_DAYS = 15;
+
+export type QuestionType = 'scale' | 'choice' | 'text';
+
+export interface Question {
+  id: string;
+  ordinal: number;
+  qtype: QuestionType;
+  prompt: string;
+  options: { min?: number; max?: number } | string[] | null;
+  required: boolean;
 }
 
 /**

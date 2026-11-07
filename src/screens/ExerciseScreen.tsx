@@ -4,6 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { useAuth } from '../context/AuthContext';
 import { enqueueLog } from '../lib/syncQueue';
 import { recentLogs } from '../lib/db';
+import { cancelTodaysReminders } from '../lib/notifications';
 import { pointsForNewSession } from '../lib/points';
 import { makeEncouragement, CoachContext } from '../ai/brain';
 import { templateForGoal, todayIndex, dayName } from '../lib/templates';
@@ -82,16 +83,23 @@ export default function ExerciseScreen({ navigation }: any) {
     }
   }, [seconds, targetSecs, running]);
 
-  function start() {
-    setResult(null);
-    setSeconds(0);
-    setReached(false);
-    firedRef.current = false;
-    setRunning(true);
+  function tick() {
     timer.current = setInterval(() => setSeconds((x) => x + 1), 1000);
   }
 
-  function stopTimer() {
+  // Start a fresh session (from 00:00) or resume a paused one — both just
+  // (re)start the ticking; only a fresh start (seconds===0) clears state.
+  function start() {
+    if (seconds === 0) {
+      setResult(null);
+      setReached(false);
+      firedRef.current = false;
+    }
+    setRunning(true);
+    tick();
+  }
+
+  function pauseTimer() {
     setRunning(false);
     if (timer.current) clearInterval(timer.current);
     timer.current = null;
@@ -105,9 +113,23 @@ export default function ExerciseScreen({ navigation }: any) {
     availableExercises: flatExercises(goal, owned),
   };
 
+  /**
+   * Stop the session and auto-decide the outcome from time on the clock:
+   * reached target -> completed, some effort -> partial, ~nothing -> skipped.
+   */
+  async function finishAndLog() {
+    const outcome: Outcome =
+      seconds >= targetSecs && targetSecs > 0
+        ? 'completed'
+        : minutes >= 1
+        ? 'partial'
+        : 'skipped';
+    await log(outcome);
+  }
+
   async function log(outcome: Outcome) {
     if (!session?.user || !profile) return;
-    stopTimer();
+    pauseTimer();
     setSaving(true);
     const mins = outcome === 'skipped' ? 0 : minutes;
     // Log against the specific exercise the user chose (falls back to the
@@ -159,6 +181,12 @@ export default function ExerciseScreen({ navigation }: any) {
         base_points: pts.base_points,
         streak_bonus: pts.streak_bonus,
       });
+
+      // They trained → stop nagging them for the rest of today. (A pure skip
+      // doesn't count as doing it, so keep the ladder going.)
+      if (outcome !== 'skipped') {
+        cancelTodaysReminders().catch(() => {});
+      }
 
       let text: string;
       if (isAI) {
@@ -227,47 +255,31 @@ export default function ExerciseScreen({ navigation }: any) {
             : `target ${targetMinutes} min${selectedExercise ? ` · ${selectedExercise}` : ''}`}
         </Text>
 
-        {!running ? (
+        {seconds === 0 && !running ? (
           <Button
-            title={seconds === 0 ? 'Start' : 'Resume'}
+            title="Start"
             onPress={start}
             style={{ marginTop: theme.space(5), alignSelf: 'stretch' }}
           />
         ) : (
-          <Button
-            title="Pause"
-            variant="secondary"
-            onPress={stopTimer}
-            style={{ marginTop: theme.space(5), alignSelf: 'stretch' }}
-          />
+          <View style={s.timerBtns}>
+            <Button
+              title={running ? 'Pause' : 'Resume'}
+              variant="secondary"
+              onPress={running ? pauseTimer : start}
+              disabled={saving}
+              style={{ flex: 1, marginRight: theme.space(2) }}
+            />
+            <Button
+              title="Stop"
+              variant="danger"
+              onPress={finishAndLog}
+              loading={saving}
+              style={{ flex: 1, marginLeft: theme.space(2) }}
+            />
+          </View>
         )}
       </Card>
-
-      <Text style={s.logHeading}>How did it go?</Text>
-      <View style={s.actions}>
-        <Button
-          title="✅ Completed"
-          onPress={() => log('completed')}
-          loading={saving}
-          style={{ flex: 1 }}
-        />
-      </View>
-      <View style={s.actionsRow}>
-        <Button
-          title="⚠️ Couldn't finish"
-          variant="secondary"
-          onPress={() => log('partial')}
-          disabled={saving}
-          style={{ flex: 1, marginRight: theme.space(2) }}
-        />
-        <Button
-          title="❌ Skipped"
-          variant="danger"
-          onPress={() => log('skipped')}
-          disabled={saving}
-          style={{ flex: 1, marginLeft: theme.space(2) }}
-        />
-      </View>
 
       {result && (
         <Card style={s.resultCard}>
@@ -294,9 +306,7 @@ const s = StyleSheet.create({
   timerCard: { alignItems: 'center', marginTop: theme.space(6) },
   clock: { color: theme.colors.text, fontSize: 64, fontWeight: '800', fontVariant: ['tabular-nums'] },
   clockSub: { color: theme.colors.textDim, fontSize: theme.font.small, marginTop: 4 },
-  logHeading: { color: theme.colors.text, fontSize: theme.font.h3, fontWeight: '700', marginTop: theme.space(7), marginBottom: theme.space(3) },
-  actions: { flexDirection: 'row' },
-  actionsRow: { flexDirection: 'row', marginTop: theme.space(3) },
+  timerBtns: { flexDirection: 'row', marginTop: theme.space(5), alignSelf: 'stretch' },
   resultCard: { marginTop: theme.space(5) },
   aiTag: { color: theme.colors.accent, fontSize: theme.font.tiny, fontWeight: '800', letterSpacing: 1, marginBottom: 6 },
   resultText: { color: theme.colors.text, fontSize: theme.font.body, lineHeight: 22 },

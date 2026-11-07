@@ -15,6 +15,9 @@ import HomeScreen from './screens/HomeScreen';
 import ExerciseScreen from './screens/ExerciseScreen';
 import HistoryScreen from './screens/HistoryScreen';
 import ProfileScreen from './screens/ProfileScreen';
+import QuestionnaireScreen from './screens/QuestionnaireScreen';
+import StudyCompleteScreen from './screens/StudyCompleteScreen';
+import { isTrialOver, isStudyComplete } from './lib/trial';
 import { ModelPrep } from './components/ModelPrep';
 import { isModelBundled } from './ai/model';
 import { theme } from './theme';
@@ -106,6 +109,10 @@ export default function RootNavigator() {
   // Decide which flow to show based on auth + onboarding progress:
   // Auth -> Consent -> Info (personal details) -> Goal -> Main.
   const signedIn = !!session?.user;
+  // Signed in but the profile hasn't loaded/created yet (e.g. the group-assign
+  // RPC is still retrying). Never fall through to the main app with no profile —
+  // show a loading screen until we have one.
+  const awaitingProfile = signedIn && !profile;
   const hasEquipment = !!(profile?.equipment && profile.equipment.length > 0);
   const needsConsent = signedIn && profile && !profile.consented_at;
   const needsInfo = signedIn && profile && profile.consented_at && !profile.nickname;
@@ -119,6 +126,8 @@ export default function RootNavigator() {
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!signedIn ? (
           <Stack.Screen name="Auth" component={AuthScreen} />
+        ) : awaitingProfile ? (
+          <Stack.Screen name="Preparing" component={Loading} />
         ) : needsConsent ? (
           <Stack.Screen name="Consent" component={ConsentScreen} />
         ) : needsInfo ? (
@@ -127,6 +136,10 @@ export default function RootNavigator() {
           <Stack.Screen name="Equipment" component={EquipmentScreen} />
         ) : needsGoal ? (
           <Stack.Screen name="Goal" component={GoalScreen} />
+        ) : isStudyComplete(profile) ? (
+          <Stack.Screen name="StudyComplete" component={StudyCompleteScreen} />
+        ) : isTrialOver(profile) ? (
+          <Stack.Screen name="Questionnaire" component={QuestionnaireScreen} />
         ) : (
           <Stack.Screen name="Main" component={MainGate} />
         )}

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { initLLM } from '../ai/llm';
 import { isModelReady } from '../ai/model';
+import { ThinkingText } from './ThinkingText';
 import { theme } from '../theme';
 
 /**
@@ -43,7 +44,8 @@ export function ModelPrep({ children }: { children: React.ReactNode }) {
       <Text style={s.logo}>FitPilot</Text>
       <ActivityIndicator color={theme.colors.accent} size="large" style={{ marginVertical: theme.space(5) }} />
       <Text style={s.title}>Setting up your AI coach</Text>
-      <Text style={s.sub}>Preparing the on-device model. This happens once.</Text>
+      <ThinkingText style={s.sub} />
+      <Text style={[s.sub, { marginTop: 4 }]}>This happens once.</Text>
       <View style={s.track}>
         <View style={[s.fill, { width: `${pct}%` }]} />
       </View>

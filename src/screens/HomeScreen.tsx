@@ -8,12 +8,14 @@ import { initLLM } from '../ai/llm';
 import { isModelBundled } from '../ai/model';
 import { flatExercises, Equipment } from '../lib/exercises';
 import { getLocalProfile, LocalProfile } from '../lib/localProfile';
+import { isCollecting } from '../lib/trial';
 import { recentLogs, fetchLoggedKeys } from '../lib/db';
 import { backfillMissedSessions } from '../lib/backfill';
 import { flushQueue } from '../lib/syncQueue';
 import { pointsThisWindow, totalPoints, windowMaxPoints } from '../lib/points';
 import { PointsInfoModal } from '../components/PointsInfo';
-import { scheduleWeeklyReminders } from '../lib/notifications';
+import { ThinkingText } from '../components/ThinkingText';
+import { refreshRemindersInBackground } from '../lib/notifications';
 import { AdherenceLog, TemplateItem } from '../types';
 import { Card, Screen, Button } from '../components/ui';
 import { theme } from '../theme';
@@ -60,7 +62,8 @@ export default function HomeScreen({ navigation, route }: any) {
       // Offline-safe study sync: flush any queued records, then backfill any
       // past scheduled sessions the user never logged (as auto-misses), so the
       // cloud has a correct scheduled-vs-done denominator for adherence.
-      if (session?.user && profile) {
+      // Only while the 15-day study is still collecting.
+      if (session?.user && profile && isCollecting(profile)) {
         (async () => {
           try {
             await flushQueue();
@@ -80,18 +83,30 @@ export default function HomeScreen({ navigation, route }: any) {
       }
 
       if (isAI && isModelBundled()) initLLM().catch(() => {});
-      if (isAI && todayItem) {
-        makeNudge(todayItem, coachCtx).then((t) => alive && setNudge(t));
-      }
       if (isAI) {
-        const todaySeed = new Date().toISOString().slice(0, 10);
-        makeDailyTip(coachCtx, todaySeed).then((t) => alive && setDailyTip(t));
+        // Regenerate the coach text on every app open. Clear first so the
+        // fun "thinking…" loader shows, and enforce a minimum ~10s display so
+        // the rotating messages get a good run before the real text appears.
+        setNudge(null);
+        setDailyTip(null);
+        const started = Date.now();
+        const minMs = 10000;
+        const holdThenSet = (setter: (v: string) => void) => (t: string) => {
+          const wait = Math.max(0, minMs - (Date.now() - started));
+          setTimeout(() => alive && setter(t), wait);
+        };
+        if (todayItem) makeNudge(todayItem, coachCtx).then(holdThenSet(setNudge));
+        const todaySeed = new Date().toISOString();
+        makeDailyTip(coachCtx, todaySeed).then(holdThenSet(setDailyTip));
       }
       if (session?.user) {
         recentLogs(session.user.id, 30).then((l) => alive && setLogs(l)).catch(() => {});
       }
-      if (profile) {
-        scheduleWeeklyReminders(template, profile.group, coachCtx).catch(() => {});
+      if (profile && isCollecting(profile)) {
+        // Fire-and-forget: builds notifications in the background (after the UI
+        // is interactive, once per day, yielding between each) so there is NO
+        // slow start while the on-device model writes the nudges.
+        refreshRemindersInBackground(template, profile.group, coachCtx);
       }
 
       return () => {
@@ -161,9 +176,14 @@ export default function HomeScreen({ navigation, route }: any) {
               <Text style={s.coachName}>Your coach</Text>
             </View>
             {todayItem && (
-              <Text style={s.coachMsg}>{nudge ?? 'Preparing your message…'}</Text>
+              nudge ? <Text style={s.coachMsg}>{nudge}</Text>
+                    : <ThinkingText style={s.coachMsg} />
             )}
-            {dailyTip && <Text style={s.coachTip}>💡 {dailyTip}</Text>}
+            {dailyTip
+              ? <Text style={s.coachTip}>💡 {dailyTip}</Text>
+              : !todayItem
+                ? <ThinkingText style={s.coachTip} />
+                : null}
           </View>
         )}
 

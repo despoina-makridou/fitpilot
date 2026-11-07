@@ -5,6 +5,7 @@ import {
   GoalDetails,
   Outcome,
   Profile,
+  Question,
   StudyGroup,
   TemplateItem,
 } from '../types';
@@ -131,6 +132,43 @@ export async function fetchLoggedKeys(userId: string, days = 21): Promise<Set<st
     if (date) set.add(`${date}|${r.item_title}`);
   }
   return set;
+}
+
+/** Fetch the active questionnaire questions (ordered). Empty = not ready yet. */
+export async function fetchQuestions(): Promise<Question[]> {
+  const { data, error } = await supabase
+    .from('questionnaire_questions')
+    .select('id, ordinal, qtype, prompt, options, required')
+    .eq('active', true)
+    .order('ordinal', { ascending: true });
+  if (error) throw error;
+  return (data as Question[]) ?? [];
+}
+
+/** Save the user's questionnaire answers and mark the questionnaire complete. */
+export async function submitQuestionnaire(
+  userId: string,
+  group: StudyGroup,
+  answers: { question_id: string; answer: string }[],
+): Promise<void> {
+  if (answers.length) {
+    const rows = answers.map((a) => ({
+      user_id: userId,
+      group,
+      question_id: a.question_id,
+      answer: a.answer,
+      answered_at: new Date().toISOString(),
+    }));
+    const { error } = await supabase
+      .from('questionnaire_responses')
+      .upsert(rows, { onConflict: 'user_id,question_id' });
+    if (error) throw error;
+  }
+  const { error: pErr } = await supabase
+    .from('profiles')
+    .update({ questionnaire_done_at: new Date().toISOString() })
+    .eq('id', userId);
+  if (pErr) throw pErr;
 }
 
 /** Recent adherence logs for the current user (for the home summary). */
